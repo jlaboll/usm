@@ -1,0 +1,17 @@
+# git-workflow — a complete, minimal usm module.
+# Two aliases plus one helper function, sourced into interactive bash AND zsh.
+name: git-workflow                 # short id: dependency key + display name (REQUIRED)
+version: 1.0.0                     # sanity mirror of the git tag (the tag is source of truth)
+description: Git status/log aliases and a current-branch helper (bash + zsh).
+
+# Ordered shell fragments, relative to this module directory. Listed order is the
+# module's internal load order; usm emits them in exactly this sequence.
+shell:
+  - fragments/aliases.sh
+  - fragments/functions.sh
+
+# OS packages this module expects. DETECT & WARN ONLY — usm never installs these;
+# it only warns on `install` if the command is missing for the active manager.
+packages:
+  brew: [git]
+  apt:  [git]

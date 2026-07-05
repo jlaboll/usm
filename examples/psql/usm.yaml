@@ -1,0 +1,34 @@
+# psql — a second module that demonstrates two more usm features:
+#   1. `requires`: it depends on the git-workflow module (loaded before it).
+#   2. `rc`: it contributes a fragment to the assembled ~/.psqlrc file.
+name: psql
+version: 1.0.0
+description: psqlrc defaults plus a git-aware dev-database helper.
+
+# Shell fragment sourced into interactive shells (defines PSQL_PAGER + pgdev()).
+shell:
+  - fragments/env.sh
+
+# rc contributions: usm concatenates every module's fragments for a given rc file,
+# in load order, into $USM_DATA/rc/<name> and links ~/.<name> to it. Here we add to
+# the `psqlrc` file (assembled -> ~/.psqlrc).
+rc:
+  psqlrc:
+    - rc/psqlrc.fragment
+
+# DETECT & WARN ONLY. `psql` ships in these packages; usm warns if it is missing.
+packages:
+  brew: [libpq]
+  apt:  [postgresql-client]
+
+# pgdev() (in fragments/env.sh) calls git_current_branch() from the git-workflow
+# module, so git-workflow is a genuine runtime dependency and must load first.
+# usm resolves this edge and orders git-workflow before psql automatically.
+#
+# NOTE: `source` must be the real git URL you publish this repo under. Because
+# git-workflow lives in the SAME repo (a different subdir), point it at that repo.
+# Replace the placeholder below with your published URL.
+requires:
+  - source: https://github.com/you/shell-modules
+    subdir: git-workflow
+    version: ">=1.0.0"

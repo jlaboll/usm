@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# usm — Unix-like Shell Manager. CLI entrypoint and command dispatch.
+set -u
+
+readonly USM_VERSION="0.0.0"
+
+# Resolve the base repo root from this script's own location, following symlinks
+# so `usm` works when linked onto PATH.
+_usm_resolve_root() {
+  local src="${BASH_SOURCE[0]}" dir
+  while [ -h "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [ "${src#/}" = "$src" ] && src="$dir/$src"
+  done
+  (cd -P "$(dirname "$src")/.." && pwd)
+}
+USM_ROOT="${USM_ROOT:-$(_usm_resolve_root)}"
+export USM_ROOT
+
+# Load core libraries (function definitions only; no side effects at source time).
+for _lib in log paths platform pkg yaml git compile resolve; do
+  # shellcheck source=/dev/null
+  . "$USM_ROOT/lib/core/$_lib.sh"
+done
+unset _lib
+
+usage() {
+  cat <<'EOF'
+usm — Unix-like Shell Manager
+
+Usage: usm <command> [args]
+
+Commands:
+  init                 Bootstrap usm into this machine's shells
+  install <url>        Install a module from a git repository
+  update [module]      Re-fetch modules and reapply
+  remove <module>      Uninstall a module
+  list                 List installed modules
+  order                Reorder modules or toggle fragments
+  sync                 Reconcile this device to its config.yaml
+  doctor               Diagnose configuration problems
+  help                 Show this help
+  version              Show the usm version
+EOF
+}
+
+# Dispatch a subcommand to lib/cli/<cmd>.sh, which must define cmd_<cmd>().
+_usm_dispatch() {
+  local cmd="$1"; shift
+  local impl="$USM_ROOT/lib/cli/$cmd.sh"
+  if [ -f "$impl" ]; then
+    # shellcheck source=/dev/null
+    . "$impl"
+    "cmd_$cmd" "$@"
+  else
+    printf 'usm: "%s" is not implemented yet\n' "$cmd" >&2
+    return 69
+  fi
+}
+
+main() {
+  # Pull a global -v/--verbose out of the arguments, wherever it appears.
+  local a; local -a rest=()
+  for a in "$@"; do
+    case "$a" in
+      -v | --verbose) USM_VERBOSE=1 ;;
+      *) rest+=("$a") ;;
+    esac
+  done
+  export USM_VERBOSE
+  if [ "${#rest[@]}" -gt 0 ]; then set -- "${rest[@]}"; else set --; fi
+
+  local cmd="${1:-help}"
+  [ "$#" -gt 0 ] && shift
+  case "$cmd" in
+    init|install|update|remove|list|order|sync|doctor|compile)
+      _usm_dispatch "$cmd" "$@" ;;
+    help|-h|--help)        usage ;;
+    version|-V|--version)  printf 'usm %s\n' "$USM_VERSION" ;;
+    *)
+      printf 'usm: unknown command "%s"\n' "$cmd" >&2
+      usage >&2
+      return 64 ;;
+  esac
+}
+
+main "$@"

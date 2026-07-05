@@ -1,0 +1,8 @@
+# macOS
+.DS_Store
+
+# Per-device usm state lives outside the repo (XDG dirs); nothing to ignore here
+# unless a single-home ($USM_ROOT-local) layout is used, which would add:
+# /cache/
+# /compiled/
+# /lock.yaml

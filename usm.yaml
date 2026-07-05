@@ -1,0 +1,14 @@
+# Base manifest for usm itself. The base declares only the packages it needs to
+# run. These are installed solely by `usm init`, and only with user approval.
+name: usm
+version: 0.0.0
+description: Unix-like Shell Manager — modular shell configuration.
+packages:
+  # git drives module fetching; yq parses manifests and config.
+  # Note: `yq` here means mikefarah/yq. It installs via brew or snap ONLY — apt's `yq`
+  # is a different tool, so there is no apt fallback. On an apt-only host, install
+  # mikefarah yq first (`snap install yq`, or from the yq releases page) before
+  # `usm init`; otherwise `usm init` fails on the missing yq.
+  brew: [git, yq]
+  apt:  [git]
+  snap: [yq]
