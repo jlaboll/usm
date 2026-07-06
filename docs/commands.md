@@ -67,7 +67,14 @@ warning: module needs missing brew package(s): libpq — install them yourself; 
 installed psql
 ```
 
+- `<url>` accepts a **shorthand** `owner/repo`, expanded to `https://github.com/owner/repo`
+  (set `USM_GIT_HOST` to target another host). Full URLs (`https://…`, `git@host:…`) and
+  local paths are used as-is. So `usm install jlaboll/usm-core` just works.
 - `--subdir X` — module lives in subdir `X` of the repo (omit for a root module).
+- **Monorepos**: if the repo's root `usm.yaml` declares a `modules:` list of member
+  subdirs, `usm install <url>` with **no** `--subdir` installs *every* member at once
+  (the repo-wide `--version` applies to all). `--subdir` still cherry-picks one member.
+  See [module-authoring.md](module-authoring.md#declaring-a-monorepo-install-every-module-at-once).
 - `--version 'C'` — a lower-bound floor. `>=1.2.0` and a bare `1.2.0` both mean "at
   least 1.2.0"; usm picks the highest satisfying `vX.Y.Z` tag. Omit to **float** to the
   default branch HEAD.

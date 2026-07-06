@@ -621,6 +621,101 @@ grep_ok "(fix7) README: 'usm order [name]'"               "usm order [name]" "$U
 grep_no "(fix7) README: drops 'usm order [name ...]'"     "usm order [name ...]" "$USM_ROOT/README.md"
 grep_ok "(fix7) resolve.sh: tag-format hint on error"     "tags must be vX.Y.Z" "$USM_ROOT/lib/core/resolve.sh"
 
+################################################################################
+# Phase 7 — monorepo first-class install + git URL shorthand expansion.
+################################################################################
+
+printf '== (7a) monorepo: install with no --subdir adds every declared member ==\n'
+MONO="$TMP/monorepo"
+mkdir -p "$MONO/mrx/fragments" "$MONO/mry/fragments"
+# Root usm.yaml is a workspace descriptor: it declares members, it is not itself a module.
+cat >"$MONO/usm.yaml" <<'EOF'
+modules:
+  - mrx
+  - mry
+EOF
+printf 'name: mrx\nversion: 1.0.0\nshell:\n  - fragments/x.sh\n' >"$MONO/mrx/usm.yaml"
+printf 'export MRX=1\n' >"$MONO/mrx/fragments/x.sh"
+printf 'name: mry\nversion: 1.0.0\nshell:\n  - fragments/y.sh\n' >"$MONO/mry/usm.yaml"
+printf 'export MRY=1\n' >"$MONO/mry/fragments/y.sh"
+git -C "$MONO" init -q; git -C "$MONO" symbolic-ref HEAD refs/heads/main
+git -C "$MONO" add -A; git -C "$MONO" commit -q -m v1; git -C "$MONO" tag v1.0.0
+MONO_OUT="$(usm install "$MONO" --version '>=1.0.0' 2>&1)"
+check "(7a) both members added to config" \
+  "$(SRC="$MONO" yq '[.modules[]|select(.source==strenv(SRC))]|length' "$CFG")" 2
+check "(7a) config has mrx member"  "$(SRC="$MONO" SUB=mrx yq '[.modules[]|select(.source==strenv(SRC) and .subdir==strenv(SUB))]|length' "$CFG")" 1
+check "(7a) config has mry member"  "$(SRC="$MONO" SUB=mry yq '[.modules[]|select(.source==strenv(SRC) and .subdir==strenv(SUB))]|length' "$CFG")" 1
+check "(7a) mrx resolved in lock"   "$(NM=mrx yq '[.modules[]|select(.name==strenv(NM))]|length' "$LOCK")" 1
+check "(7a) mry resolved in lock"   "$(NM=mry yq '[.modules[]|select(.name==strenv(NM))]|length' "$LOCK")" 1
+check "(7a) mrx shares repo ref v1.0.0" "$(NM=mrx yq '.modules[]|select(.name==strenv(NM))|.ref' "$LOCK")" v1.0.0
+grep_ok "(7a) load sources mrx" "mrx/fragments/x.sh" "$LOAD"
+grep_ok "(7a) load sources mry" "mry/fragments/y.sh" "$LOAD"
+check "(7a) install reports member count" "$(printf '%s\n' "$MONO_OUT" | grep -c 'installed 2 modules')" 1
+
+printf '== (7b) monorepo: --subdir cherry-picks a single member (no auto-expand) ==\n'
+MONO2="$TMP/monorepo2"
+mkdir -p "$MONO2/onlyone/fragments" "$MONO2/skipme/fragments"
+cat >"$MONO2/usm.yaml" <<'EOF'
+modules:
+  - onlyone
+  - skipme
+EOF
+printf 'name: onlyone\nversion: 1.0.0\nshell:\n  - fragments/o.sh\n' >"$MONO2/onlyone/usm.yaml"
+printf 'export ONLYONE=1\n' >"$MONO2/onlyone/fragments/o.sh"
+printf 'name: skipme\nversion: 1.0.0\nshell:\n  - fragments/s.sh\n' >"$MONO2/skipme/usm.yaml"
+printf 'export SKIPME=1\n' >"$MONO2/skipme/fragments/s.sh"
+git -C "$MONO2" init -q; git -C "$MONO2" symbolic-ref HEAD refs/heads/main
+git -C "$MONO2" add -A; git -C "$MONO2" commit -q -m v1; git -C "$MONO2" tag v1.0.0
+usm install "$MONO2" --subdir onlyone --version '>=1.0.0' >/dev/null 2>&1
+check "(7b) only the cherry-picked member added" \
+  "$(SRC="$MONO2" yq '[.modules[]|select(.source==strenv(SRC))]|length' "$CFG")" 1
+check "(7b) onlyone in lock"  "$(NM=onlyone yq '[.modules[]|select(.name==strenv(NM))]|length' "$LOCK")" 1
+check "(7b) skipme NOT in lock" "$(NM=skipme yq '[.modules[]|select(.name==strenv(NM))]|length' "$LOCK")" 0
+
+printf '== (7c) monorepo: a declared member missing errors, mutates nothing ==\n'
+MONO3="$TMP/monorepo3"
+mkdir -p "$MONO3/present/fragments"
+cat >"$MONO3/usm.yaml" <<'EOF'
+modules:
+  - present
+  - ghostmod
+EOF
+printf 'name: present\nversion: 1.0.0\nshell:\n  - fragments/p.sh\n' >"$MONO3/present/usm.yaml"
+printf 'export PRESENT=1\n' >"$MONO3/present/fragments/p.sh"
+git -C "$MONO3" init -q; git -C "$MONO3" symbolic-ref HEAD refs/heads/main
+git -C "$MONO3" add -A; git -C "$MONO3" commit -q -m v1; git -C "$MONO3" tag v1.0.0
+M3_ERR="$(usm install "$MONO3" --version '>=1.0.0' 2>&1)"; M3_RC=$?
+check "(7c) install fails nonzero"  "$M3_RC" 1
+check "(7c) error names missing member" "$(printf '%s\n' "$M3_ERR" | grep -c "ghostmod")" 1
+check "(7c) nothing from monorepo3 in config" \
+  "$(SRC="$MONO3" yq '[.modules[]|select(.source==strenv(SRC))]|length' "$CFG")" 0
+
+printf '== (7d) shorthand: usm_url_normalize expands owner/repo, leaves others alone ==\n'
+# Unit-test the normalizer directly: shorthand -> https URL end-to-end install would need
+# the network, but the expansion rule is pure string logic we can assert offline.
+( . "$USM_ROOT/lib/core/git.sh"
+  printf '%s\n' "$(usm_url_normalize 'jlaboll/usm-core')" ) >"$TMP/sh_default"
+check "(7d) owner/repo -> github https" "$(cat "$TMP/sh_default")" "https://github.com/jlaboll/usm-core"
+( . "$USM_ROOT/lib/core/git.sh"
+  printf '%s\n' "$(usm_url_normalize 'jlaboll/usm-core.git')" ) >"$TMP/sh_git"
+check "(7d) trailing .git stripped then expanded" "$(cat "$TMP/sh_git")" "https://github.com/jlaboll/usm-core"
+( . "$USM_ROOT/lib/core/git.sh"
+  export USM_GIT_HOST=gitlab.com
+  printf '%s\n' "$(usm_url_normalize 'me/proj')" ) >"$TMP/sh_host"
+check "(7d) USM_GIT_HOST overrides host" "$(cat "$TMP/sh_host")" "https://gitlab.com/me/proj"
+( . "$USM_ROOT/lib/core/git.sh"
+  printf '%s\n' "$(usm_url_normalize 'https://github.com/you/repo')" ) >"$TMP/sh_full"
+check "(7d) full https URL untouched" "$(cat "$TMP/sh_full")" "https://github.com/you/repo"
+( . "$USM_ROOT/lib/core/git.sh"
+  printf '%s\n' "$(usm_url_normalize 'git@github.com:you/repo.git')" ) >"$TMP/sh_scp"
+check "(7d) scp-form URL untouched (only .git stripped)" "$(cat "$TMP/sh_scp")" "git@github.com:you/repo"
+( . "$USM_ROOT/lib/core/git.sh"
+  printf '%s\n' "$(usm_url_normalize "$REPO")" ) >"$TMP/sh_local"
+check "(7d) absolute local path untouched" "$(cat "$TMP/sh_local")" "$REPO"
+( . "$USM_ROOT/lib/core/git.sh"
+  printf '%s\n' "$(usm_url_normalize 'a/b/c')" ) >"$TMP/sh_deep"
+check "(7d) three-segment value not shorthand" "$(cat "$TMP/sh_deep")" "a/b/c"
+
 printf '\n== summary ==\n'
 printf 'PASS=%s FAIL=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

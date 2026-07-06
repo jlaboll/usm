@@ -6,13 +6,33 @@ usm_hash() {
   printf '%s' "$1" | { command -v sha1sum >/dev/null 2>&1 && sha1sum || shasum; } | cut -d' ' -f1 | cut -c1-16
 }
 
-# Normalize a git URL: strip trailing whitespace, trailing slashes, one trailing ".git".
+# Expand a host shorthand ("owner/repo") into a full https URL. Left unchanged: anything
+# with a scheme (https://, git://, ssh://…), scp-like syntax (git@host:owner/repo), a
+# local path (/…, ./…, ~/…, or a leading dot), an existing local directory of that name,
+# or a value that isn't exactly two non-empty path segments. Host is $USM_GIT_HOST
+# (default github.com), so `jlaboll/usm-core` -> `https://github.com/jlaboll/usm-core`.
+# Expects an already-trimmed value (no trailing whitespace/slashes/.git).
+usm_url_shorthand() {
+  local url="$1"
+  case "$url" in
+    *://* | *@*:* | /* | .* | ~*) printf '%s' "$url"; return ;;  # URL / scp / local path
+    */*/*)                        printf '%s' "$url"; return ;;  # more than two segments
+    */*)                          : ;;                            # candidate: one slash
+    *)                            printf '%s' "$url"; return ;;  # no slash -> not shorthand
+  esac
+  # A real local directory of that name wins over the shorthand interpretation.
+  [ -d "$url" ] && { printf '%s' "$url"; return; }
+  printf 'https://%s/%s' "${USM_GIT_HOST:-github.com}" "$url"
+}
+
+# Normalize a git URL: strip trailing whitespace, trailing slashes, and one trailing
+# ".git", then expand any host shorthand ("owner/repo") to a full URL.
 usm_url_normalize() {
   local url="$1"
   while case "$url" in *[[:space:]]) true ;; *) false ;; esac; do url="${url%?}"; done
   while [ "${url%/}" != "$url" ]; do url="${url%/}"; done
   url="${url%.git}"
-  printf '%s' "$url"
+  usm_url_shorthand "$url"
 }
 
 # Cache directory for a (already-normalized) URL. Pure: no side effects, no git output.

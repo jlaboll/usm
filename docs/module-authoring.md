@@ -35,6 +35,32 @@ usm install https://github.com/you/shell-modules --subdir git-workflow --version
 
 A single-module repo omits `--subdir` (the manifest sits at the repo root).
 
+### Declaring a monorepo: install every module at once
+
+Rather than make consumers run one `usm install --subdir …` per member, a monorepo can
+ship a **root `usm.yaml` that declares its members**. This root manifest is a *workspace
+descriptor* — it lists member subdirs under `modules:` and is **not itself a module** (no
+`name`/`shell`/`rc`):
+
+```yaml
+# shell-modules/usm.yaml  (repo root)
+modules:
+  - git-workflow
+  - psql
+```
+
+Now a consumer installs the whole repo in one command — no `--subdir`:
+
+```sh
+usm install https://github.com/you/shell-modules --version '>=1.0.0'
+```
+
+usm registers **every declared member** in `config.yaml` and resolves them together.
+Because git tags (and therefore versions) are repo-wide, the single `--version` floor
+applies to all members. `--subdir X` still works to cherry-pick one member from the same
+repo. A repo without a root `modules:` declaration behaves exactly as before: no
+`--subdir` means the root manifest is treated as a single module.
+
 ## The `usm.yaml` manifest schema
 
 Every field, with the `git-workflow` example manifest:
