@@ -25,13 +25,39 @@ usm_url_shorthand() {
   printf 'https://%s/%s' "${USM_GIT_HOST:-github.com}" "$url"
 }
 
+# Canonicalize equivalent remote git forms that address the SAME repo to one https
+# identity, so a repo referenced as ssh (scp-style git@host:owner/repo, or ssh://…) or
+# git:// dedupes with its https:// form instead of colliding as two sources declaring the
+# same module name. Already-https/http/file URLs, local paths, and bare shorthands pass
+# through untouched. NOTE: this also decides clone transport — an ssh URL is cloned over
+# https after canonicalization, so the host must serve the repo over https (with a
+# credential helper for private repos); an https-inaccessible, ssh-only host won't work.
+usm_url_canonicalize() {
+  local url="$1" rest host path
+  case "$url" in
+    *://*) : ;;                                       # has a scheme; handled below
+    *@*:*)                                            # scp-style [user@]host:owner/repo
+      rest="${url#*@}"                                # drop leading user@
+      host="${rest%%:*}"; path="${rest#*:}"
+      printf 'https://%s/%s' "$host" "$path"; return ;;
+    *) printf '%s' "$url"; return ;;                  # local path / shorthand / bare
+  esac
+  case "$url" in
+    ssh://*) rest="${url#ssh://}"; rest="${rest#*@}"; printf 'https://%s' "$rest"; return ;;
+    git://*) rest="${url#git://}";                    printf 'https://%s' "$rest"; return ;;
+    *)       printf '%s' "$url"; return ;;            # https/http/file/…: unchanged
+  esac
+}
+
 # Normalize a git URL: strip trailing whitespace, trailing slashes, and one trailing
-# ".git", then expand any host shorthand ("owner/repo") to a full URL.
+# ".git", canonicalize equivalent ssh/git forms to a single https identity (so the same
+# repo addressed two ways dedupes), then expand any host shorthand ("owner/repo").
 usm_url_normalize() {
   local url="$1"
   while case "$url" in *[[:space:]]) true ;; *) false ;; esac; do url="${url%?}"; done
   while [ "${url%/}" != "$url" ]; do url="${url%/}"; done
   url="${url%.git}"
+  url="$(usm_url_canonicalize "$url")"
   usm_url_shorthand "$url"
 }
 

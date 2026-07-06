@@ -81,20 +81,30 @@ $(usm_yaml_seq "$cfg" ".shells")
 EOF
 }
 
-# Append a guarded block to $1 that sources the usm loader $2 (idempotent).
+# Ensure $1 carries the current guarded usm block: puts the usm CLI on PATH and sources
+# the loader $2. If an older block is already present its content is REPLACED (so re-running
+# init upgrades the block in place); otherwise a fresh block is appended. The PATH line is
+# guarded against duplicate entries so re-sourcing the rc in a live session never grows PATH.
 _usm_link_rc() {
-  local rc="$1" loader="$2" begin="# >>> usm >>>"
+  local rc="$1" loader="$2" bindir="$USM_ROOT/bin" begin="# >>> usm >>>" end="# <<< usm <<<"
   if [ -f "$rc" ] && grep -qF "$begin" "$rc"; then
-    usm_vlog "usm block already present in $rc"
-    return 0
+    # Strip the existing block (begin..end inclusive) before re-appending the current one.
+    local tmp="$rc.usm.$$"
+    awk -v b="$begin" -v e="$end" '
+      index($0,b){skip=1}
+      skip!=1{print}
+      index($0,e){skip=0}
+    ' "$rc" >"$tmp" && mv "$tmp" "$rc"
+    usm_vlog "refreshed usm block in $rc"
   fi
   {
     printf '\n%s\n' "$begin"
-    printf '# Load modular shell configuration managed by usm.\n'
+    printf '# Put the usm CLI on PATH and load modular shell configuration managed by usm.\n'
+    printf 'case ":$PATH:" in *":%s:"*) ;; *) PATH="%s:$PATH" ;; esac\n' "$bindir" "$bindir"
     printf '[ -r "%s" ] && . "%s"\n' "$loader" "$loader"
-    printf '# <<< usm <<<\n'
+    printf '%s\n' "$end"
   } >>"$rc"
-  usm_vlog "added usm block to $rc"
+  usm_vlog "wrote usm block to $rc"
 }
 
 # Ensure file $1 sources file $2 (idempotent, guarded).
