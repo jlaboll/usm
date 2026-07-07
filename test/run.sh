@@ -729,6 +729,62 @@ check "(7d) absolute local path untouched" "$(cat "$TMP/sh_local")" "$REPO"
   printf '%s\n' "$(usm_url_normalize 'a/b/c')" ) >"$TMP/sh_deep"
 check "(7d) three-segment value not shorthand" "$(cat "$TMP/sh_deep")" "a/b/c"
 
+################################################################################
+# Phase 8 — clone transport selection: ssh-first with https fallback for the
+# GitHub family, and the enterprise carve-out (no fabricated counterpart for
+# non-swappable hosts). Pure string logic, asserted offline.
+################################################################################
+
+printf '== (8a) transports: github https identity -> ssh first, then https ==\n'
+( . "$USM_ROOT/lib/core/git.sh"
+  usm_url_transports 'https://github.com/you/repo' ) >"$TMP/tr_gh"
+check "(8a) line1 = ssh form"        "$(sed -n 1p "$TMP/tr_gh")" "git@github.com:you/repo"
+check "(8a) line2 = https form"      "$(sed -n 2p "$TMP/tr_gh")" "https://github.com/you/repo"
+check "(8a) exactly two transports"  "$(grep -c . "$TMP/tr_gh")" 2
+
+printf '== (8b) USM_GIT_TRANSPORT forces a single transport ==\n'
+( . "$USM_ROOT/lib/core/git.sh"; export USM_GIT_TRANSPORT=https
+  usm_url_transports 'https://github.com/you/repo' ) >"$TMP/tr_https"
+check "(8b) https-only -> one line"  "$(grep -c . "$TMP/tr_https")" 1
+check "(8b) https-only value"        "$(cat "$TMP/tr_https")" "https://github.com/you/repo"
+( . "$USM_ROOT/lib/core/git.sh"; export USM_GIT_TRANSPORT=ssh
+  usm_url_transports 'https://github.com/you/repo' ) >"$TMP/tr_ssh"
+check "(8b) ssh-only -> one line"    "$(grep -c . "$TMP/tr_ssh")" 1
+check "(8b) ssh-only value"          "$(cat "$TMP/tr_ssh")" "git@github.com:you/repo"
+
+printf '== (8c) GitHub Enterprise / GitLab hosts are scheme-swappable too ==\n'
+( . "$USM_ROOT/lib/core/git.sh"
+  usm_url_transports 'https://git.corp.example/team/tool' ) >"$TMP/tr_ghe"
+check "(8c) GHE ssh form derived"    "$(sed -n 1p "$TMP/tr_ghe")" "git@git.corp.example:team/tool"
+( . "$USM_ROOT/lib/core/git.sh"      # GitLab subgroups (multi-segment path) still swap
+  usm_url_transports 'https://gitlab.com/group/sub/proj' ) >"$TMP/tr_gl"
+check "(8c) gitlab subgroup ssh form" "$(sed -n 1p "$TMP/tr_gl")" "git@gitlab.com:group/sub/proj"
+
+printf '== (8d) Azure DevOps: no fabricated counterpart (single transport, as-is) ==\n'
+ADO_HTTPS='https://dev.azure.com/org/proj/_git/repo'
+( . "$USM_ROOT/lib/core/git.sh"
+  usm_url_transports "$ADO_HTTPS" ) >"$TMP/tr_ado"
+check "(8d) ADO https single transport" "$(grep -c . "$TMP/tr_ado")" 1
+check "(8d) ADO https left as-is"        "$(cat "$TMP/tr_ado")" "$ADO_HTTPS"
+# An explicit ADO ssh URL keeps its identity (NOT mangled into a broken https URL).
+( . "$USM_ROOT/lib/core/git.sh"
+  usm_url_normalize 'git@ssh.dev.azure.com:v3/org/proj/repo' ) >"$TMP/tr_ado_id"
+check "(8d) ADO scp identity preserved"  "$(cat "$TMP/tr_ado_id")" "git@ssh.dev.azure.com:v3/org/proj/repo"
+( . "$USM_ROOT/lib/core/git.sh"
+  usm_url_transports "$(cat "$TMP/tr_ado_id")" ) >"$TMP/tr_ado_scp"
+check "(8d) ADO scp single transport"    "$(grep -c . "$TMP/tr_ado_scp")" 1
+
+printf '== (8e) local path / non-github identity -> single transport, no ssh fabrication ==\n'
+( . "$USM_ROOT/lib/core/git.sh"
+  usm_url_transports "$REPO" ) >"$TMP/tr_local"
+check "(8e) local path single transport" "$(grep -c . "$TMP/tr_local")" 1
+check "(8e) local path unchanged"         "$(cat "$TMP/tr_local")" "$REPO"
+
+printf '== (8f) github scp/ssh still canonicalize to ONE https identity (unchanged) ==\n'
+( . "$USM_ROOT/lib/core/git.sh"
+  usm_url_normalize 'git@github.com:you/repo.git' ) >"$TMP/tr_ghid"
+check "(8f) github scp -> https identity" "$(cat "$TMP/tr_ghid")" "https://github.com/you/repo"
+
 printf '\n== summary ==\n'
 printf 'PASS=%s FAIL=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

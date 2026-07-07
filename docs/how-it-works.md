@@ -169,6 +169,31 @@ stripped before hashing). Multiple modules living in different subdirs of the sa
 **share one clone**. `usm remove` prunes a clone once no locked module references it;
 `usm update` fetches clones and re-resolves.
 
+### Identity vs. clone transport
+
+The normalized URL is the repo's **identity** — the cache key, the `source` written to
+`config.yaml`/`lock.yaml`, and the dedup key. It is always the canonical `https` form, so
+the same repo referenced as `ssh` and `https` resolves to one entry and a `config.yaml`
+stays portable across machines regardless of how each machine authenticates.
+
+**How the clone is transported is chosen separately, per machine, at first clone.** For a
+GitHub-family host (github.com, GitHub Enterprise, GitLab, Gitea, Bitbucket Server —
+anywhere `https://host/path` and `git@host:path` name the same repo), usm tries **ssh
+first, then https**: a machine with an ssh key clones a private repo with no https token,
+and a machine with only an https credential still succeeds on the fallback. Probes fail
+fast and silently (no prompts, bounded ssh connect); only if every transport fails does
+usm retry the last one attached — so you can enter a token or unlock a key and see git's
+real error — then warn with what it tried.
+
+- `USM_GIT_TRANSPORT=ssh` or `=https` forces a single transport (e.g. CI with an https
+  token can skip the ssh probe).
+- **Enterprise caveat:** hosts whose ssh and https forms differ structurally — **Azure
+  DevOps** (`https://dev.azure.com/org/proj/_git/repo` vs
+  `git@ssh.dev.azure.com:v3/org/proj/repo`), **AWS CodeCommit** — are *not* mechanically
+  interconvertible, so usm never fabricates a counterpart. It clones the exact URL you
+  give and records it as-is. Those hosts work; they just don't get automatic dual
+  transport. To use ssh there, supply the ssh URL explicitly.
+
 ## Shell fragments vs. rc assembly
 
 The compile step produces two kinds of output from module fragments:
