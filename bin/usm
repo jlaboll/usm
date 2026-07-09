@@ -2,7 +2,7 @@
 # usm — Unix-like Shell Manager. CLI entrypoint and command dispatch.
 set -u
 
-readonly USM_VERSION="1.0.2"
+readonly USM_VERSION="1.0.3"
 
 # Resolve the base repo root from this script's own location, following symlinks
 # so `usm` works when linked onto PATH.

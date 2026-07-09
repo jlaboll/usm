@@ -47,8 +47,47 @@ EOF
     if ! usm_compile; then rm -f "$pre"; usm_die "update failed"; fi
   fi
 
+  # Prune worktrees the freshly-written lock no longer references (e.g. a versioned
+  # module that just advanced to a higher tag leaves its old <flat>/<tag> behind).
+  _usm_worktrees_prune "$lock"
+
   _usm_update_report "$pre" "$lock"
   rm -f "$pre"
+}
+
+# Remove every worktree under $(usm_worktrees_dir) not referenced by a versioned module
+# in $lock, forcefully cleaning leftover artifacts (usm_git_worktree_remove). Referenced
+# worktrees are keyed by <flat>/<ref>, derived from each versioned lock module's source
+# and ref. Empty <flat> parents are dropped. A missing/empty worktrees tree is a no-op.
+_usm_worktrees_prune() {
+  local lock="$1" wtroot referenced="" n i d
+  wtroot="$(usm_worktrees_dir)"
+  [ -d "$wtroot" ] || return 0
+  [ -f "$lock" ] || return 0
+  n="$(yq '.modules | length' "$lock" 2>/dev/null)"; n="${n:-0}"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    local ver src rf flat
+    ver="$(yq ".modules[$i].version" "$lock")"
+    if [ -n "$ver" ] && [ "$ver" != null ]; then
+      src="$(yq ".modules[$i].source" "$lock")"
+      rf="$(yq ".modules[$i].ref" "$lock")"
+      flat="$(usm_url_flatten "$src")"
+      referenced="$referenced $wtroot/$flat/$rf"
+    fi
+    i=$((i + 1))
+  done
+  for d in "$wtroot"/*/*; do
+    [ -d "$d" ] || continue
+    case " $referenced " in
+      *" $d "*) : ;;
+      *) usm_git_worktree_remove "$d"; usm_vlog "pruned worktree $d" ;;
+    esac
+  done
+  for d in "$wtroot"/*; do
+    [ -d "$d" ] || continue
+    rmdir "$d" 2>/dev/null || :
+  done
 }
 
 # Fetch one repo (by source URL) and fast-forward its default branch so a floating

@@ -33,11 +33,12 @@ cmd_remove() {
   usm_log "removed $name"
 }
 
-# Delete cache clones no longer referenced by any lock module.
+# Delete remotes clones (and their worktrees) no longer referenced by any lock module.
+# A module's `.cache` field is its flattened name — the remotes/<flat> directory name.
 _usm_prune_cache() {
-  local lock cache used d h
-  lock="$(usm_lock_file)"; cache="$(usm_cache_dir)"
-  [ -d "$cache" ] || return 0
+  local lock remotes used d h wt
+  lock="$(usm_lock_file)"; remotes="$(usm_remotes_dir)"
+  [ -d "$remotes" ] || return 0
   # Guard: only prune on a SUCCESSFUL lock read. A failed/empty yq read would look like
   # "no clone is referenced" and license `rm -rf` of every clone — skip instead. (A
   # legitimately module-less lock reads successfully with empty output and prunes all.)
@@ -46,10 +47,16 @@ _usm_prune_cache() {
     usm_warn "could not read lock.yaml; skipping cache prune"
     return 0
   fi
-  for d in "$cache"/*; do
+  for d in "$remotes"/*; do
     [ -d "$d" ] || continue
     h="$(basename "$d")"
     if ! printf '%s\n' "$used" | grep -qxF "$h"; then
+      # Drop any worktrees derived from this remote first, then the clone itself.
+      for wt in "$(usm_worktrees_dir)/$h"/*; do
+        [ -d "$wt" ] || continue
+        usm_git_worktree_remove "$wt"
+      done
+      rmdir "$(usm_worktrees_dir)/$h" 2>/dev/null || :
       usm_run rm -rf "$d"
       usm_vlog "pruned cache clone $h"
     fi

@@ -23,6 +23,7 @@ trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"; mkdir -p "$HOME"
 export USM_CONFIG="$TMP/cfg"
 export USM_DATA="$TMP/data"
+export USM_CACHE="$TMP/cache"
 export USM_VERBOSE=0
 # Deterministic git identity/branch for fixtures.
 export GIT_AUTHOR_NAME=usm GIT_AUTHOR_EMAIL=usm@test
@@ -94,9 +95,9 @@ check "lock git-workflow version" "$(yq '.modules[0].version' "$LOCK")" 1.0.0
 check "lock git-workflow ref"     "$(yq '.modules[0].ref' "$LOCK")" v1.0.0
 check "lock git-workflow sha"     "$(yq '.modules[0].sha' "$LOCK")" "$TAG_SHA"
 check "lock git-workflow subdir"  "$(yq '.modules[0].subdir' "$LOCK")" git-workflow
-EXP_HASH="$(printf '%s' "$REPO" | { command -v sha1sum >/dev/null 2>&1 && sha1sum || shasum; } | cut -d' ' -f1 | cut -c1-16)"
-check "lock cache hash"           "$(yq '.modules[0].cache' "$LOCK")" "$EXP_HASH"
-check "lock path"                 "$(yq '.modules[0].path' "$LOCK")" "$EXP_HASH/git-workflow"
+EXP_FLAT="$( . "$USM_ROOT/lib/core/git.sh"; usm_url_flatten "$REPO" )"
+check "lock cache = flat name"    "$(yq '.modules[0].cache' "$LOCK")" "$EXP_FLAT"
+check "lock path = worktree"      "$(yq '.modules[0].path' "$LOCK")" "worktrees/$EXP_FLAT/v1.0.0/git-workflow"
 check "lock requires empty"       "$(yq '.modules[0].requires | length' "$LOCK")" 0
 
 printf '== install psql (shares git-workflow repo -> repo-granular ref) ==\n'
@@ -112,9 +113,12 @@ check "psql shares repo ref"       "$(yq '.modules[1].ref' "$LOCK")" v1.0.0
 check "psql shares repo sha"       "$(yq '.modules[1].sha' "$LOCK")" "$TAG_SHA"
 
 printf '== compiled/load.sh order + absolute paths ==\n'
-CACHE="$USM_DATA/cache"
-grep_ok "load sources git-workflow aliases" "$CACHE/$EXP_HASH/git-workflow/fragments/aliases.sh" "$LOAD"
-grep_ok "load sources psql env"             "$CACHE/$EXP_HASH/psql/fragments/env.sh" "$LOAD"
+CACHE="$USM_CACHE"
+WT="worktrees/$EXP_FLAT/v1.0.0"
+check "versioned module materialized as worktree" "$( [ -e "$CACHE/$WT/.git" ] && echo yes || echo no )" yes
+check "remotes base clone present"                "$( [ -d "$CACHE/remotes/$EXP_FLAT/.git" ] && echo yes || echo no )" yes
+grep_ok "load sources git-workflow aliases" "$CACHE/$WT/git-workflow/fragments/aliases.sh" "$LOAD"
+grep_ok "load sources psql env"             "$CACHE/$WT/psql/fragments/env.sh" "$LOAD"
 # git-workflow was installed first, so it must be sourced before psql
 GW_LINE="$(grep -n 'git-workflow/fragments/aliases.sh' "$LOAD" | cut -d: -f1)"
 PS_LINE="$(grep -n 'psql/fragments/env.sh' "$LOAD" | cut -d: -f1)"
@@ -157,12 +161,13 @@ check "~/.psqlrc symlink removed"  "$( [ -L "$HOME/.psqlrc" ] && echo yes || ech
 check "backup restored to ~/.psqlrc" "$( [ -f "$HOME/.psqlrc" ] && echo yes )" yes
 grep_ok "restored content"         "pre-existing user file" "$HOME/.psqlrc"
 # cache clone is still referenced by git-workflow -> must NOT be pruned
-check "cache clone still present"  "$( [ -d "$CACHE/$EXP_HASH" ] && echo yes )" yes
+check "cache clone still present"  "$( [ -d "$CACHE/remotes/$EXP_FLAT" ] && echo yes )" yes
 
 printf '== remove last module prunes cache ==\n'
 usm remove git-workflow >/dev/null 2>&1
 check "no modules left"            "$(yq '.modules | length' "$LOCK")" 0
-check "cache clone pruned"         "$( [ -d "$CACHE/$EXP_HASH" ] && echo yes || echo no )" no
+check "cache clone pruned"         "$( [ -d "$CACHE/remotes/$EXP_FLAT" ] && echo yes || echo no )" no
+check "worktree pruned with clone" "$( [ -d "$CACHE/worktrees/$EXP_FLAT" ] && echo yes || echo no )" no
 grep_no "load empty of fragments"  "fragments/" "$LOAD"
 
 ################################################################################
@@ -494,8 +499,8 @@ check "(5e) doctor prints OK lines"   "$( [ "$(printf '%s\n' "$DOC_OUT" | grep -
 check "(5e) doctor has no ERROR line" "$(printf '%s\n' "$DOC_OUT" | grep -c '^ERROR')" 0
 
 printf '== (5f) doctor on a broken install reports ERROR and exits non-zero ==\n'
-BAD_HASH="$(NM=m1 yq '.modules[]|select(.name==strenv(NM))|.cache' "$LOCK")"
-rm -rf "$CACHE/$BAD_HASH"   # corrupt: delete a module's cache clone
+BAD_FLAT="$(NM=m1 yq '.modules[]|select(.name==strenv(NM))|.cache' "$LOCK")"
+rm -rf "$CACHE/remotes/$BAD_FLAT"   # corrupt: delete a module's cache clone
 DOC_OUT2="$(usm doctor 2>&1)"; DOC_RC2=$?
 check "(5f) doctor broken exits non-zero" "$( [ "$DOC_RC2" -ne 0 ] && echo yes )" yes
 check "(5f) doctor reports ERROR"         "$( [ "$(printf '%s\n' "$DOC_OUT2" | grep -c '^ERROR')" -gt 0 ] && echo yes )" yes
@@ -784,6 +789,56 @@ printf '== (8f) github scp/ssh still canonicalize to ONE https identity (unchang
 ( . "$USM_ROOT/lib/core/git.sh"
   usm_url_normalize 'git@github.com:you/repo.git' ) >"$TMP/tr_ghid"
 check "(8f) github scp -> https identity" "$(cat "$TMP/tr_ghid")" "https://github.com/you/repo"
+
+################################################################################
+# Phase 9 — cache layout: flatten identity, versioned worktrees, and cleanup.
+################################################################################
+
+printf '== (9a) usm_url_flatten maps identities to flat dir names ==\n'
+( . "$USM_ROOT/lib/core/git.sh"
+  printf '%s\n' "$(usm_url_flatten 'https://github.com/jlaboll/usm-core')" ) >"$TMP/fl_gh"
+check "(9a) https identity flattened"  "$(cat "$TMP/fl_gh")" "github-com-jlaboll-usm-core"
+( . "$USM_ROOT/lib/core/git.sh"
+  printf '%s\n' "$(usm_url_flatten 'https://github.com/you/repo')" ) >"$TMP/fl_2"
+check "(9a) simple identity flattened" "$(cat "$TMP/fl_2")" "github-com-you-repo"
+# A github-family scp/ssh identity canonicalizes to https first, so both spellings share
+# ONE flattened name -> ONE cache dir.
+( . "$USM_ROOT/lib/core/git.sh"
+  a="$(usm_url_flatten "$(usm_url_normalize 'git@github.com:you/repo.git')")"
+  b="$(usm_url_flatten "$(usm_url_normalize 'https://github.com/you/repo')")"
+  [ "$a" = "$b" ] && printf 'same\n' || printf 'diff\n' ) >"$TMP/fl_same"
+check "(9a) ssh & https share one flat name" "$(cat "$TMP/fl_same")" "same"
+
+printf '== (9b) versioned module -> worktree; floating module -> remotes clone ==\n'
+yq -i '.modules = []' "$CFG"; yq -i 'del(.overrides)' "$CFG"; usm compile >/dev/null 2>&1
+WV="$TMP/wvrepo"; mkdir -p "$WV/wv/fragments"
+printf 'name: wv\nversion: 1.0.0\nshell:\n  - fragments/v.sh\n' >"$WV/wv/usm.yaml"
+printf 'export WV=1\n' >"$WV/wv/fragments/v.sh"
+git -C "$WV" init -q; git -C "$WV" symbolic-ref HEAD refs/heads/main
+git -C "$WV" add -A; git -C "$WV" commit -q -m v1; git -C "$WV" tag v1.0.0
+WV_FLAT="$( . "$USM_ROOT/lib/core/git.sh"; usm_url_flatten "$WV" )"
+usm install "$WV" --subdir wv --version '>=1.0.0' >/dev/null 2>&1
+check "(9b) versioned path = worktrees/<flat>/<tag>/wv" "$(NM=wv yq '.modules[]|select(.name==strenv(NM))|.path' "$LOCK")" "worktrees/$WV_FLAT/v1.0.0/wv"
+check "(9b) worktree checkout exists"   "$( [ -e "$USM_CACHE/worktrees/$WV_FLAT/v1.0.0/.git" ] && echo yes || echo no )" yes
+check "(9b) base remotes clone exists"  "$( [ -d "$USM_CACHE/remotes/$WV_FLAT/.git" ] && echo yes || echo no )" yes
+grep_ok "(9b) load sources from worktree" "$USM_CACHE/worktrees/$WV_FLAT/v1.0.0/wv/fragments/v.sh" "$LOAD"
+WF="$TMP/wfrepo"; mkdir -p "$WF/wf/fragments"
+printf 'name: wf\nversion: 0.0.0\nshell:\n  - fragments/f.sh\n' >"$WF/wf/usm.yaml"
+printf 'export WF=1\n' >"$WF/wf/fragments/f.sh"
+git -C "$WF" init -q; git -C "$WF" symbolic-ref HEAD refs/heads/main
+git -C "$WF" add -A; git -C "$WF" commit -q -m c1
+WF_FLAT="$( . "$USM_ROOT/lib/core/git.sh"; usm_url_flatten "$WF" )"
+usm install "$WF" --subdir wf >/dev/null 2>&1
+check "(9b) floating path = remotes/<flat>/wf" "$(NM=wf yq '.modules[]|select(.name==strenv(NM))|.path' "$LOCK")" "remotes/$WF_FLAT/wf"
+check "(9b) floating has no worktree dir" "$( [ -d "$USM_CACHE/worktrees/$WF_FLAT" ] && echo yes || echo no )" no
+
+printf '== (9c) update prunes the stale worktree when a versioned module advances ==\n'
+check "(9c) v1.0.0 worktree present pre-update" "$( [ -e "$USM_CACHE/worktrees/$WV_FLAT/v1.0.0/.git" ] && echo yes || echo no )" yes
+git -C "$WV" commit -q --allow-empty -m v2; git -C "$WV" tag v2.0.0
+usm update wv >/dev/null 2>&1
+check "(9c) wv advanced to v2.0.0"        "$(NM=wv yq '.modules[]|select(.name==strenv(NM))|.ref' "$LOCK")" v2.0.0
+check "(9c) new v2.0.0 worktree present"  "$( [ -e "$USM_CACHE/worktrees/$WV_FLAT/v2.0.0/.git" ] && echo yes || echo no )" yes
+check "(9c) stale v1.0.0 worktree pruned" "$( [ -d "$USM_CACHE/worktrees/$WV_FLAT/v1.0.0" ] && echo yes || echo no )" no
 
 printf '\n== summary ==\n'
 printf 'PASS=%s FAIL=%s\n' "$PASS" "$FAIL"

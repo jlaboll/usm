@@ -1,7 +1,7 @@
 # Base manifest for usm itself. The base declares only the packages it needs to
 # run. These are installed solely by `usm init`, and only with user approval.
 name: usm
-version: 1.0.2
+version: 1.0.3
 description: Unix-like Shell Manager — modular shell configuration.
 packages:
   # git drives module fetching; yq parses manifests and config.

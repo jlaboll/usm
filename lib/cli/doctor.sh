@@ -14,9 +14,9 @@ _dr_warn() { printf 'WARN  %s\n' "$1"; _DR_WARN=$((_DR_WARN + 1)); }
 _dr_err()  { printf 'ERROR %s\n' "$1"; _DR_ERR=$((_DR_ERR + 1)); }
 
 cmd_doctor() {
-  local cfg lock cache rcdir compiled
+  local cfg lock rcdir compiled
   cfg="$(usm_config_file)"; lock="$(usm_lock_file)"
-  cache="$(usm_cache_dir)"; rcdir="$(usm_rc_dir)"; compiled="$(usm_compiled_dir)"
+  rcdir="$(usm_rc_dir)"; compiled="$(usm_compiled_dir)"
   _DR_ERR=0; _DR_WARN=0
 
   # 1. required tools
@@ -42,7 +42,7 @@ cmd_doctor() {
     local s missing_cache=0
     while IFS= read -r s; do
       [ -z "$s" ] && continue
-      if [ ! -d "$cache/$(usm_hash "$s")/.git" ]; then
+      if [ ! -d "$(usm_cache_path "$s")/.git" ]; then
         _dr_err "no cache clone for source: $s"; missing_cache=1
       fi
     done <<EOF

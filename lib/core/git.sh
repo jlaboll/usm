@@ -1,9 +1,25 @@
-# Git and cache helpers. One clone per repo under $USM_DATA/cache/<hash>; a module
-# is a subdir within it. All git output is silenced unless verbose (usm_run / -q).
+# Git and cache helpers. One clone per repo under $(usm_remotes_dir)/<flat-name>; a
+# module is a subdir within it, and each versioned release gets a git worktree under
+# $(usm_worktrees_dir)/<flat-name>/<tag>. All git output is silenced unless verbose
+# (usm_run / -q).
 
-# Stable short hash of a string (cache key). Uses sha1sum or shasum, whichever exists.
+# Stable short hash of a string. Retained as an internal dedup key for the resolver's
+# parallel-array maps (REPO_HASH/MOD_HASH); it is NOT a directory name anymore — on-disk
+# cache locations use the flattened name (usm_url_flatten). Uses sha1sum or shasum.
 usm_hash() {
   printf '%s' "$1" | { command -v sha1sum >/dev/null 2>&1 && sha1sum || shasum; } | cut -d' ' -f1 | cut -c1-16
+}
+
+# Flatten a (normalized) git identity into a filesystem-safe directory name, e.g.
+# https://github.com/jlaboll/usm-core -> github-com-jlaboll-usm-core. The scheme is
+# dropped, then every run of non-alphanumeric characters collapses to a single '-' and
+# leading/trailing '-' are trimmed. Deterministic and stable per identity, so it is a
+# safe cache key: two spellings of the same repo already share one normalized identity
+# (usm_url_normalize), hence one flattened name.
+usm_url_flatten() {
+  local id="$1"
+  case "$id" in *://*) id="${id#*://}" ;; esac
+  printf '%s' "$id" | tr -C 'A-Za-z0-9' '-' | tr -s '-' | sed 's/^-//; s/-$//'
 }
 
 # Expand a host shorthand ("owner/repo") into a full https URL. Left unchanged: anything
@@ -118,9 +134,10 @@ usm_url_transports() {
   printf '%s\n' "$id"
 }
 
-# Cache directory for a (already-normalized) URL. Pure: no side effects, no git output.
+# Remotes clone directory for a (already-normalized) URL — the flat-named base clone
+# under $(usm_remotes_dir). Pure: no side effects, no git output.
 usm_cache_path() {
-  printf '%s/%s' "$(usm_cache_dir)" "$(usm_hash "$1")"
+  printf '%s/%s' "$(usm_remotes_dir)" "$(usm_url_flatten "$1")"
 }
 
 # Ensure the repo for a normalized URL is cloned (else fetched). Returns non-zero on
@@ -220,4 +237,37 @@ usm_git_default_branch() {
 # List v* tags (one per line).
 usm_git_tags() {
   git -C "$1" tag --list 'v*' 2>/dev/null
+}
+
+# Create (or refresh) a worktree of BASE_DIR checked out DETACHED at REF, at TARGET_DIR.
+# A release is immutable, so the worktree is detached at the tag (never a branch, which
+# would collide with the base clone's checkout). Idempotent: an existing worktree is
+# hard-reset to REF and cleaned; a stale/foreign TARGET_DIR is removed and recreated.
+# The base clone must already contain REF (it is fetched with --tags). Returns non-zero
+# on failure.
+usm_git_worktree_add() {
+  local base="$1" ref="$2" target="$3"
+  mkdir -p "$(dirname "$target")"
+  if [ -e "$target/.git" ]; then
+    usm_run git -C "$target" checkout --quiet --detach "$ref" \
+      && usm_run git -C "$target" reset --hard --quiet "$ref" \
+      && usm_run git -C "$target" clean -qfdx
+    return
+  fi
+  [ -e "$target" ] && rm -rf "$target"
+  git -C "$base" worktree prune >/dev/null 2>&1
+  usm_run git -C "$base" worktree add --quiet --force --detach "$target" "$ref"
+}
+
+# Remove a worktree and FORCEFULLY clean any remaining artifacts — including ignored and
+# untracked files git leaves behind. The base clone is derived from the worktree's parent
+# directory name (<flat> in worktrees/<flat>/<tag>) so git's administrative bookkeeping
+# (base/.git/worktrees/*) is pruned too. Safe to call on a path that is already gone.
+usm_git_worktree_remove() {
+  local target="$1" base
+  base="$(usm_remotes_dir)/$(basename "$(dirname "$target")")"
+  [ -d "$base/.git" ] && git -C "$base" worktree remove --force "$target" >/dev/null 2>&1
+  rm -rf "$target"
+  [ -d "$base/.git" ] && git -C "$base" worktree prune >/dev/null 2>&1
+  return 0
 }

@@ -58,7 +58,7 @@ _usm_visit() {
   [ "$sub" = null ] && sub=""
   [ "$cons" = null ] && cons=""
   hash="$(usm_hash "$src")"
-  dir="$(usm_cache_dir)/$hash"
+  dir="$(usm_cache_path "$src")"
 
   # Register the repo (once). Check it out at the default branch so manifests read
   # during discovery are consistent regardless of a prior compile's checked-out tag.
@@ -68,7 +68,7 @@ _usm_visit() {
     local db; db="$(usm_git_default_branch "$dir")"
     [ -n "$db" ] && usm_git_checkout "$dir" "$db"
     REPO_HASH+=("$hash"); REPO_URL+=("$src"); REPO_BOUND+=("")
-    REPO_REF+=(""); REPO_VER+=(""); REPO_SHA+=("")
+    REPO_REF+=(""); REPO_VER+=(""); REPO_SHA+=(""); REPO_DIR+=("")
     ri="$(_usm_repo_index "$hash")"
   fi
 
@@ -134,22 +134,27 @@ _usm_resolve_repos() {
   local i=0 n=${#REPO_HASH[@]}
   while [ "$i" -lt "$n" ]; do
     local hash="${REPO_HASH[$i]}" url="${REPO_URL[$i]}" bound="${REPO_BOUND[$i]}"
-    local dir ref ver sha
-    dir="$(usm_cache_dir)/$hash"
+    local base ref ver sha moddir wt
+    base="$(usm_cache_path "$url")"
     if [ -z "$bound" ]; then
-      # No constraint anywhere -> default-branch HEAD, version="".
-      ref="$(usm_git_default_branch "$dir")"
+      # No constraint anywhere -> the base clone floats at default-branch HEAD.
+      ref="$(usm_git_default_branch "$base")"
       [ -n "$ref" ] || { usm_err "cannot determine default branch for $url"; return 1; }
       ver=""
+      usm_git_checkout "$base" "$ref" || { usm_err "checkout '$ref' failed for $url"; return 1; }
+      moddir="$base"
     else
-      ref="$(_usm_pick_tag "$dir" "$bound")"
+      # Versioned release -> resolve the tag and materialize it in an isolated worktree.
+      ref="$(_usm_pick_tag "$base" "$bound")"
       [ -n "$ref" ] || { usm_err "no tag satisfies '>=$bound' for $url (release tags must be vX.Y.Z)"; return 1; }
       ver="${ref#v}"
+      wt="$(usm_worktrees_dir)/$(usm_url_flatten "$url")/$ref"
+      usm_git_worktree_add "$base" "$ref" "$wt" || { usm_err "worktree '$ref' failed for $url"; return 1; }
+      moddir="$wt"
     fi
-    usm_git_checkout "$dir" "$ref" || { usm_err "checkout '$ref' failed for $url"; return 1; }
-    sha="$(usm_git_head_sha "$dir")"
+    sha="$(usm_git_head_sha "$moddir")"
     [ -n "$sha" ] || { usm_err "cannot read sha for '$ref' in $url"; return 1; }
-    REPO_REF[$i]="$ref"; REPO_VER[$i]="$ver"; REPO_SHA[$i]="$sha"
+    REPO_REF[$i]="$ref"; REPO_VER[$i]="$ver"; REPO_SHA[$i]="$sha"; REPO_DIR[$i]="$moddir"
     i=$((i + 1))
   done
 }
@@ -161,8 +166,9 @@ _usm_resolve_repos() {
 _usm_read_names() {
   local i=0 n=${#MOD_KEY[@]}
   while [ "$i" -lt "$n" ]; do
-    local hash="${MOD_HASH[$i]}" sub="${MOD_SUB[$i]}" dir mdir manifest name
-    dir="$(usm_cache_dir)/$hash"
+    local hash="${MOD_HASH[$i]}" sub="${MOD_SUB[$i]}" dir mdir manifest name ri
+    ri="$(_usm_repo_index "$hash")"
+    dir="${REPO_DIR[$ri]}"
     mdir="$dir"; [ -n "$sub" ] && mdir="$dir/$sub"
     manifest="$mdir/usm.yaml"
     [ -f "$manifest" ] || { usm_err "no usm.yaml at '${sub:-<root>}' in ${MOD_SRC[$i]} at resolved ref"; return 1; }
@@ -304,13 +310,14 @@ _usm_write_lock() {
     local ri; ri="$(_usm_repo_index "$hash")"
     local ref="${REPO_REF[$ri]}" ver="${REPO_VER[$ri]}" sha="${REPO_SHA[$ri]}" bound="${REPO_BOUND[$ri]}"
     local cons=""; [ -n "$bound" ] && cons=">=$bound"
-    local relpath="$hash"; [ -n "$sub" ] && relpath="$hash/$sub"
-    local dir mdir manifest
-    dir="$(usm_cache_dir)/$hash"
-    mdir="$dir"; [ -n "$sub" ] && mdir="$dir/$sub"
+    local base mdir manifest relpath root cachekey
+    base="${REPO_DIR[$ri]}"
+    mdir="$base"; [ -n "$sub" ] && mdir="$base/$sub"
     manifest="$mdir/usm.yaml"
+    root="$(usm_cache_dir)"; relpath="${mdir#"$root"/}"
+    cachekey="$(usm_url_flatten "$src")"
     SRC="$src" SUB="$sub" CONS="$cons" VER="$ver" REF="$ref" SHA="$sha" \
-    HASH="$hash" RELPATH="$relpath" MAN="$manifest" REQ="${MOD_REQ[$idx]}" \
+    HASH="$cachekey" RELPATH="$relpath" MAN="$manifest" REQ="${MOD_REQ[$idx]}" \
     yq -i '.modules += [(load(strenv(MAN)) | {
       "name": .name,
       "source": strenv(SRC),
@@ -337,7 +344,7 @@ _usm_write_lock() {
 # here so a re-entrant call starts clean. No lock is written unless every step passes.
 _usm_resolve() {
   local cfg="$1" lock="$2"
-  REPO_HASH=(); REPO_URL=(); REPO_BOUND=(); REPO_REF=(); REPO_VER=(); REPO_SHA=()
+  REPO_HASH=(); REPO_URL=(); REPO_BOUND=(); REPO_REF=(); REPO_VER=(); REPO_SHA=(); REPO_DIR=()
   MOD_KEY=(); MOD_HASH=(); MOD_SUB=(); MOD_SRC=(); MOD_NAME=(); MOD_REQ=(); MOD_REQKEYS=()
   Q_SRC=(); Q_SUB=(); Q_CONS=(); ORDER=()
   _usm_discover "$cfg"      || return 1
