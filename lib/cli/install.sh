@@ -5,7 +5,9 @@
 # <url> may be a shorthand ("owner/repo" -> https://github.com/owner/repo; see
 # usm_url_normalize). When no --subdir is given and the repo's root usm.yaml declares a
 # `modules:` list (a monorepo of member subdirs), every listed member is installed and
-# the repo-wide --version applies to all of them. --subdir still cherry-picks one member.
+# the repo-wide --version applies to all of them; the repo is also recorded as a followed
+# monorepo so `usm update` auto-installs members added upstream later. --subdir still
+# cherry-picks one member (and does NOT follow the monorepo).
 
 cmd_install() {
   local url="" subdir="" version="" subdir_set=0
@@ -65,6 +67,9 @@ EOF
   for t in "${targets[@]}"; do
     _usm_config_upsert_module "$cfg" "$nurl" "$t" "$version"
   done
+  # Whole-repo install: follow this monorepo so `usm update` auto-installs members added
+  # upstream later. A --subdir cherry-pick is NOT followed (only that one member is wanted).
+  [ "$monorepo" = 1 ] && _usm_config_add_monorepo "$cfg" "$nurl"
   if ! usm_compile; then
     mv "$backup" "$cfg"
     usm_die "compile failed; config.yaml left unchanged"
@@ -74,40 +79,5 @@ EOF
     usm_log "installed ${#targets[@]} modules from $nurl"
   else
     usm_log "installed $name"
-  fi
-}
-
-# Warn (only) about missing commands the manifest declares as packages. Detection is by
-# COMMAND NAME on PATH, not by manager, so we check the UNION of names declared under
-# brew/apt/snap (deduped) — a command declared only under a non-active manager (e.g.
-# packages.snap on a brew host) is still worth warning about. Never installs anything.
-_usm_install_pkg_warn() {
-  local manifest="$1" mgr pkgs missing
-  mgr="$(usm_pkg_manager)"
-  [ "$mgr" = none ] && return 0
-  pkgs="$(
-    { usm_yaml_seq "$manifest" ".packages.brew"
-      usm_yaml_seq "$manifest" ".packages.apt"
-      usm_yaml_seq "$manifest" ".packages.snap"
-    } | awk 'NF && !seen[$0]++'
-  )"
-  [ -n "$pkgs" ] || return 0
-  missing="$(usm_pkg_missing $pkgs)"
-  [ -n "$missing" ] && usm_warn "module needs missing command(s): $(printf '%s ' $missing)— install them yourself; usm won't."
-  return 0
-}
-
-# Upsert a module entry (matched by source+subdir) into config.modules, preserving
-# position on update. Empty subdir/version keys are omitted.
-_usm_config_upsert_module() {
-  local cfg="$1" src="$2" subdir="$3" version="$4" exists
-  exists="$(SRC="$src" SUB="$subdir" yq '[.modules[]? | select((.source==strenv(SRC)) and ((.subdir // "")==strenv(SUB)))] | length' "$cfg")"
-  if [ "${exists:-0}" -gt 0 ]; then
-    SRC="$src" SUB="$subdir" VER="$version" yq -i '
-      (.modules[] | select((.source==strenv(SRC)) and ((.subdir // "")==strenv(SUB)))) |=
-        ({"source": strenv(SRC), "subdir": strenv(SUB), "version": strenv(VER)} | del(.[] | select(. == "")))' "$cfg"
-  else
-    SRC="$src" SUB="$subdir" VER="$version" yq -i '
-      .modules += [ ({"source": strenv(SRC), "subdir": strenv(SUB), "version": strenv(VER)} | del(.[] | select(. == ""))) ]' "$cfg"
   fi
 }

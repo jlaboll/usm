@@ -2,7 +2,7 @@
 # usm — Unix-like Shell Manager. CLI entrypoint and command dispatch.
 set -u
 
-readonly USM_VERSION="1.0.3"
+readonly USM_VERSION="1.0.4"
 
 # Resolve the base repo root from this script's own location, following symlinks
 # so `usm` works when linked onto PATH.
@@ -19,7 +19,7 @@ USM_ROOT="${USM_ROOT:-$(_usm_resolve_root)}"
 export USM_ROOT
 
 # Load core libraries (function definitions only; no side effects at source time).
-for _lib in log paths platform pkg yaml git compile resolve; do
+for _lib in log paths platform pkg yaml git module compile resolve; do
   # shellcheck source=/dev/null
   . "$USM_ROOT/lib/core/$_lib.sh"
 done

@@ -46,6 +46,7 @@ _usm_init_config() {
 shells: [$shells]
 rc_files: []
 modules: []
+monorepos: []
 overrides: {}
 EOF
   usm_vlog "wrote $cfg"

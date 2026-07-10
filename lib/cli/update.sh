@@ -9,6 +9,11 @@
 # higher tag; a floating module advances to the freshly-fetched default-branch HEAD
 # (usm_git_ff_default fast-forwards the local branch the resolver reads).
 #
+# A repo installed as a whole monorepo (recorded under config `monorepos:`) is also
+# expanded: any member added to its root `modules:` upstream is auto-installed here,
+# inheriting the repo-wide version its siblings share (_usm_monorepo_expand). A --subdir
+# cherry-pick is not a followed monorepo, so it never grows new members on update.
+#
 # KNOWN LIMITATION (Phase 3 handoff): the dependency GRAPH is discovered at each repo's
 # DEFAULT BRANCH, while names/shell/rc are read at the RESOLVED ref. If a tagged
 # manifest's `requires` differs from the default branch, a newly-required dep can be
@@ -25,27 +30,46 @@ cmd_update() {
   local pre; pre="$(usm_data_dir)/.lock.pre-update.$$"
   if [ -f "$lock" ]; then cp "$lock" "$pre"; else printf 'modules: []\n' >"$pre"; fi
 
+  # update may mutate config: followed-monorepo auto-expand adds members declared upstream.
+  # Back it up so a compile failure never leaves a half-added (possibly broken) member.
+  local cbak; cbak="$cfg.usm-update.$$"; cp "$cfg" "$cbak"
+
   if [ -f "$lock" ] && [ "$(yq '.modules | length' "$lock" 2>/dev/null)" -gt 0 ]; then
     if [ -n "$target" ]; then
-      local src
+      local src nsrc
       src="$(NM="$target" usm_yaml_get "$lock" '.modules[] | select(.name==strenv(NM)) | .source')"
-      [ -n "$src" ] || { rm -f "$pre"; usm_die "no installed module named '$target'"; }
-      _usm_update_fetch "$src"
+      [ -n "$src" ] || { rm -f "$pre" "$cbak"; usm_die "no installed module named '$target'"; }
+      nsrc="$(usm_url_normalize "$src")"
+      _usm_update_fetch "$nsrc"
+      # If the targeted module's repo is a followed monorepo, pick up its new members too.
+      _usm_monorepo_expand "$cfg" "$nsrc"
     else
-      local s
+      local fetched=" " s ns
       while IFS= read -r s; do
         [ -z "$s" ] && continue
-        _usm_update_fetch "$s"
+        ns="$(usm_url_normalize "$s")"
+        _usm_update_fetch "$ns"; fetched="$fetched$ns "
       done <<EOF
 $(yq '[.modules[].source] | unique | .[]' "$lock")
 EOF
+      # Auto-install members added upstream to any followed monorepo. Fetch first for a
+      # monorepo whose members are all absent from the lock (nothing fetched it above).
+      while IFS= read -r s; do
+        [ -z "$s" ] && continue
+        ns="$(usm_url_normalize "$s")"
+        case "$fetched" in *" $ns "*) : ;; *) _usm_update_fetch "$ns"; fetched="$fetched$ns " ;; esac
+        _usm_monorepo_expand "$cfg" "$ns"
+      done <<EOF
+$(usm_yaml_seq "$cfg" '.monorepos')
+EOF
     fi
     # Re-resolve without re-fetching: only the repos fetched above may move.
-    if ! USM_NO_FETCH=1 usm_compile; then rm -f "$pre"; usm_die "update failed"; fi
+    if ! USM_NO_FETCH=1 usm_compile; then mv "$cbak" "$cfg"; rm -f "$pre"; usm_die "update failed"; fi
   else
     # Nothing locked yet — behave like a cold compile (clone + fetch everything).
-    if ! usm_compile; then rm -f "$pre"; usm_die "update failed"; fi
+    if ! usm_compile; then mv "$cbak" "$cfg"; rm -f "$pre"; usm_die "update failed"; fi
   fi
+  rm -f "$cbak"
 
   # Prune worktrees the freshly-written lock no longer references (e.g. a versioned
   # module that just advanced to a higher tag leaves its old <flat>/<tag> behind).

@@ -69,7 +69,7 @@ _usm_url_scheme_swappable() {
 # transport is chosen separately at clone time (usm_url_transports), so an ssh-first,
 # https-fallback clone still records one stable https identity.
 usm_url_canonicalize() {
-  local url="$1" rest host path
+  local url="$1" rest host path seg
   case "$url" in
     *://*) : ;;                                       # has a scheme; handled below
     *@*:*)                                            # scp-style [user@]host:owner/repo
@@ -84,7 +84,23 @@ usm_url_canonicalize() {
     *) printf '%s' "$url"; return ;;                  # local path / shorthand / bare
   esac
   case "$url" in
-    ssh://*) rest="${url#ssh://}"; rest="${rest#*@}" ;;  # -> host[:port]/path
+    ssh://*)
+      rest="${url#ssh://}"; rest="${rest#*@}"            # -> host[:port]/path OR host:owner/repo
+      # A colon before the first '/' is EITHER a real ssh port (numeric) OR, commonly, a
+      # scp-style separator someone spelled under an ssh:// scheme (ssh://host:owner/repo —
+      # git's own scp form is host:owner/repo, no scheme). A non-numeric segment can only be
+      # the owner, so fold the colon back to '/' and this spelling dedupes with
+      # https://host/owner/repo instead of minting `host:owner` as a bogus hostname (which
+      # collided as a second source declaring the same module name). A genuine numeric port
+      # has no https equivalent, so leave such a URL exactly as-is.
+      case "$rest" in
+        *:*)
+          host="${rest%%:*}"; path="${rest#*:}"; seg="${path%%/*}"
+          case "$seg" in
+            '' | *[!0-9]*) rest="$host/$path" ;;          # non-numeric -> scp-style spelling
+            *)             printf '%s' "$url"; return ;;   # real ssh port -> keep as-is
+          esac ;;
+      esac ;;
     git://*) rest="${url#git://}" ;;                     # -> host/path
     *)       printf '%s' "$url"; return ;;               # https/http/file: unchanged
   esac

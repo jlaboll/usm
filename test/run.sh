@@ -720,6 +720,21 @@ check "(7d) ssh:// URL canonicalized to https identity" "$(cat "$TMP/sh_ssh")" "
 ( . "$USM_ROOT/lib/core/git.sh"
   printf '%s\n' "$(usm_url_normalize 'git://github.com/you/repo.git')" ) >"$TMP/sh_giturl"
 check "(7d) git:// URL canonicalized to https identity" "$(cat "$TMP/sh_giturl")" "https://github.com/you/repo"
+# scp-style path spelled under an ssh:// scheme (ssh://host:owner/repo). The colon is a
+# scp separator, not a port, so it must dedupe with https://host/owner/repo — otherwise
+# `host:owner` becomes a bogus hostname and collides as a second source declaring the same
+# module (the reported "module name conflict" bug).
+( . "$USM_ROOT/lib/core/git.sh"
+  printf '%s\n' "$(usm_url_normalize 'ssh://github.com:you/repo.git')" ) >"$TMP/sh_sshcolon"
+check "(7d) ssh://host:owner/repo canonicalized to https identity" "$(cat "$TMP/sh_sshcolon")" "https://github.com/you/repo"
+( . "$USM_ROOT/lib/core/git.sh"
+  a="$(usm_url_normalize 'ssh://github.com:you/repo')"
+  b="$(usm_url_normalize 'https://github.com/you/repo')"
+  [ "$a" = "$b" ] && printf 'same\n' || printf 'diff\n' ) >"$TMP/sh_sshcolon_same"
+check "(7d) ssh:host: form shares identity with https" "$(cat "$TMP/sh_sshcolon_same")" "same"
+( . "$USM_ROOT/lib/core/git.sh"
+  printf '%s\n' "$(usm_url_normalize 'ssh://git@example.com:22/you/repo.git')" ) >"$TMP/sh_sshport"
+check "(7d) genuine ssh port left as-is (no https equivalent)" "$(cat "$TMP/sh_sshport")" "ssh://git@example.com:22/you/repo"
 # The whole point: an ssh ref and an https ref to the same repo must produce one identity,
 # so a monorepo whose members `require` each other over ssh dedupe with the https install.
 ( . "$USM_ROOT/lib/core/git.sh"
@@ -733,6 +748,77 @@ check "(7d) absolute local path untouched" "$(cat "$TMP/sh_local")" "$REPO"
 ( . "$USM_ROOT/lib/core/git.sh"
   printf '%s\n' "$(usm_url_normalize 'a/b/c')" ) >"$TMP/sh_deep"
 check "(7d) three-segment value not shorthand" "$(cat "$TMP/sh_deep")" "a/b/c"
+
+printf '== (7e) followed monorepo: update auto-installs members added upstream ==\n'
+MONOE="$TMP/monorepoE"
+mkdir -p "$MONOE/mex/fragments" "$MONOE/mey/fragments"
+cat >"$MONOE/usm.yaml" <<'EOF'
+modules:
+  - mex
+  - mey
+EOF
+printf 'name: mex\nversion: 1.0.0\nshell:\n  - fragments/x.sh\n' >"$MONOE/mex/usm.yaml"
+printf 'export MEX=1\n' >"$MONOE/mex/fragments/x.sh"
+printf 'name: mey\nversion: 1.0.0\nshell:\n  - fragments/y.sh\n' >"$MONOE/mey/usm.yaml"
+printf 'export MEY=1\n' >"$MONOE/mey/fragments/y.sh"
+git -C "$MONOE" init -q; git -C "$MONOE" symbolic-ref HEAD refs/heads/main
+git -C "$MONOE" add -A; git -C "$MONOE" commit -q -m v1
+# Install the whole repo (floating) — this records it as a followed monorepo.
+usm install "$MONOE" >/dev/null 2>&1
+check "(7e) two members installed initially" \
+  "$(SRC="$MONOE" yq '[.modules[]|select(.source==strenv(SRC))]|length' "$CFG")" 2
+check "(7e) source recorded under monorepos" \
+  "$(SRC="$MONOE" yq '[.monorepos[]?|select(.==strenv(SRC))]|length' "$CFG")" 1
+# A new member appears upstream on the default branch.
+mkdir -p "$MONOE/mez/fragments"
+printf 'name: mez\nversion: 1.0.0\nshell:\n  - fragments/z.sh\n' >"$MONOE/mez/usm.yaml"
+printf 'export MEZ=1\n' >"$MONOE/mez/fragments/z.sh"
+cat >"$MONOE/usm.yaml" <<'EOF'
+modules:
+  - mex
+  - mey
+  - mez
+EOF
+git -C "$MONOE" add -A; git -C "$MONOE" commit -q -m 'add mez'
+MONOE_OUT="$(usm update 2>&1)"
+check "(7e) new member auto-added to config" \
+  "$(SRC="$MONOE" SUB=mez yq '[.modules[]|select(.source==strenv(SRC) and .subdir==strenv(SUB))]|length' "$CFG")" 1
+check "(7e) new member resolved into lock" "$(NM=mez yq '[.modules[]|select(.name==strenv(NM))]|length' "$LOCK")" 1
+grep_ok "(7e) load sources the new member" "mez/fragments/z.sh" "$LOAD"
+check "(7e) update announces the new member" "$(printf '%s\n' "$MONOE_OUT" | grep -c "new member 'mez'")" 1
+
+printf '== (7f) cherry-picked --subdir is NOT followed: update adds no new members ==\n'
+MONOF="$TMP/monorepoF"
+mkdir -p "$MONOF/fpick/fragments" "$MONOF/fskip/fragments"
+cat >"$MONOF/usm.yaml" <<'EOF'
+modules:
+  - fpick
+  - fskip
+EOF
+printf 'name: fpick\nversion: 1.0.0\nshell:\n  - fragments/p.sh\n' >"$MONOF/fpick/usm.yaml"
+printf 'export FPICK=1\n' >"$MONOF/fpick/fragments/p.sh"
+printf 'name: fskip\nversion: 1.0.0\nshell:\n  - fragments/s.sh\n' >"$MONOF/fskip/usm.yaml"
+printf 'export FSKIP=1\n' >"$MONOF/fskip/fragments/s.sh"
+git -C "$MONOF" init -q; git -C "$MONOF" symbolic-ref HEAD refs/heads/main
+git -C "$MONOF" add -A; git -C "$MONOF" commit -q -m v1
+usm install "$MONOF" --subdir fpick >/dev/null 2>&1
+check "(7f) cherry-pick not recorded under monorepos" \
+  "$(SRC="$MONOF" yq '[.monorepos[]?|select(.==strenv(SRC))]|length' "$CFG")" 0
+# Add a new member upstream; a followed monorepo would pick it up, a cherry-pick must not.
+mkdir -p "$MONOF/fnew/fragments"
+printf 'name: fnew\nversion: 1.0.0\nshell:\n  - fragments/n.sh\n' >"$MONOF/fnew/usm.yaml"
+printf 'export FNEW=1\n' >"$MONOF/fnew/fragments/n.sh"
+cat >"$MONOF/usm.yaml" <<'EOF'
+modules:
+  - fpick
+  - fskip
+  - fnew
+EOF
+git -C "$MONOF" add -A; git -C "$MONOF" commit -q -m 'add fnew'
+usm update >/dev/null 2>&1
+check "(7f) fnew NOT auto-added (cherry-pick not followed)" \
+  "$(SRC="$MONOF" SUB=fnew yq '[.modules[]|select(.source==strenv(SRC) and .subdir==strenv(SUB))]|length' "$CFG")" 0
+check "(7f) fnew NOT in lock" "$(NM=fnew yq '[.modules[]|select(.name==strenv(NM))]|length' "$LOCK")" 0
 
 ################################################################################
 # Phase 8 — clone transport selection: ssh-first with https fallback for the

@@ -39,7 +39,8 @@ ln -s ~/.usm/bin/usm /usr/local/bin/usm
 # 2. Install a module from a git repo (a subdir of a repo that holds a usm.yaml).
 usm install https://github.com/you/shell-modules --subdir git-workflow
 # ...or use a GitHub shorthand; and if the repo's root usm.yaml declares its modules,
-# omit --subdir to install every module in the monorepo at once:
+# omit --subdir to install every module in the monorepo at once. A whole-repo install
+# is "followed": a later `usm update` auto-installs any members added to it upstream.
 usm install you/shell-modules
 
 # 3. Open a new shell (or `. ~/.bashrc` / `. ~/.zshrc`). Your module is live.
