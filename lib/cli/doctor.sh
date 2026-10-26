@@ -20,8 +20,8 @@ cmd_doctor() {
   _DR_ERR=0; _DR_WARN=0
 
   # 1. required tools
-  if command -v git >/dev/null 2>&1; then _dr_ok "git present"; else _dr_err "git not found on PATH"; fi
-  if command -v yq  >/dev/null 2>&1; then _dr_ok "yq present";  else _dr_err "yq not found on PATH"; fi
+  if usm_pkg_installed git; then _dr_ok "git present"; else _dr_err "git not found on PATH"; fi
+  if usm_pkg_installed yq;  then _dr_ok "yq present";  else _dr_err "yq (mikefarah) not found on PATH"; fi
 
   # 2. config.yaml presence + validity
   local have_cfg=0
